@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
@@ -21,6 +22,17 @@ var (
 
 	// DefaultDialer is a dialer with all fields set to the default zero values.
 	DefaultDialer = websocket.DefaultDialer
+)
+
+const (
+	// Time allowed to write a message to the peer.
+	writeWait = 10 * time.Second
+
+	// Time allowed to read the next pong message from the peer.
+	pongWait = 60 * time.Second
+
+	// Send pings to peer with this period. Must be less than pongWait.
+	pingPeriod = (pongWait * 9) / 10
 )
 
 // WebsocketProxy is an HTTP Handler that takes an incoming WebSocket
@@ -158,7 +170,22 @@ func (w *WebsocketProxy) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		log.Printf("websocketproxy: couldn't upgrade %s\n", err)
 		return
 	}
-	defer connPub.Close()
+	pingTicker := time.NewTicker(time.Millisecond * 500)
+	defer func() {
+		connPub.Close()
+		pingTicker.Stop()
+	}()
+
+	connPub.SetReadDeadline(time.Now().Add(pongWait))
+	connPub.SetPongHandler(func(string) error { connPub.SetReadDeadline(time.Now().Add(pongWait)); return nil })
+	go func() {
+		for range pingTicker.C {
+			connPub.SetWriteDeadline(time.Now().Add(writeWait))
+			if err := connPub.WriteMessage(websocket.PingMessage, nil); err != nil {
+				return
+			}
+		}
+	}()
 
 	errc := make(chan error, 2)
 
